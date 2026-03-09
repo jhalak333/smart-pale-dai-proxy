@@ -17,85 +17,124 @@ const TARGET_API = 'https://gandakitech.com.np/smart_bell/api/get_device_data.ph
 // Store cookies between requests
 let cookieJar = {};
 
+// Helper function to check if response is JSON
+function isJSON(data) {
+    if (typeof data !== 'string') return true;
+    try {
+        JSON.parse(data);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+// Helper function to extract redirect URL from HTML
+function extractRedirectUrl(html) {
+    const match = html.match(/location\.href="([^"]+)"/);
+    return match ? match[1] : null;
+}
+
 app.get('/api/device/:deviceId', async (req, res) => {
     console.log(`\n=== Request for device: ${req.params.deviceId} ===`);
     
     try {
-        // Step 1: Make initial request that will get the challenge
-        console.log('Step 1: Making initial request...');
-        const initialResponse = await axios({
-            method: 'get',
-            url: TARGET_API,
-            params: {
-                device_id: req.params.deviceId,
-                t: Date.now()
-            },
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml,application/json',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Referer': 'https://gandakitech.com.np/',
-                'Cache-Control': 'no-cache'
-            },
-            httpsAgent: httpsAgent,
-            maxRedirects: 0,
-            validateStatus: function (status) {
-                return status >= 200 && status < 500; // Accept all status codes
-            }
-        });
-
-        // Save any cookies from the response
-        if (initialResponse.headers['set-cookie']) {
-            const cookies = initialResponse.headers['set-cookie'];
-            cookieJar[req.params.deviceId] = cookies.join('; ');
-            console.log('Cookies saved for device');
-        }
-
-        // Check if we got the challenge page (HTML)
-        const responseData = initialResponse.data;
-        const isHTML = typeof responseData === 'string' && 
-                      (responseData.includes('<!DOCTYPE') || responseData.includes('<html'));
-
-        if (isHTML) {
-            console.log('Step 2: Challenge page received, extracting redirect...');
-            
-            // Extract the redirect URL from the JavaScript
-            const redirectMatch = responseData.match(/location\.href="([^"]+)"/);
-            
-            if (redirectMatch && redirectMatch[1]) {
-                const redirectUrl = redirectMatch[1];
-                console.log('Redirect URL:', redirectUrl);
-                
-                // Step 3: Follow the redirect with cookies
-                console.log('Step 3: Following redirect...');
-                const finalResponse = await axios({
-                    method: 'get',
-                    url: redirectUrl,
-                    headers: {
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                        'Accept': 'application/json, text/plain, */*',
-                        'Accept-Language': 'en-US,en;q=0.9',
-                        'Cookie': cookieJar[req.params.deviceId] || '',
-                        'Referer': 'https://gandakitech.com.np/'
-                    },
-                    httpsAgent: httpsAgent,
-                    timeout: 10000
-                });
-                
-                console.log('Final response status:', finalResponse.status);
-                console.log('Final response type:', typeof finalResponse.data);
-                
-                // Send the actual JSON data back to the client
-                return res.json(finalResponse.data);
-            }
+        let currentUrl = TARGET_API;
+        let responseData = null;
+        let redirectCount = 0;
+        const maxRedirects = 5;
+        
+        // Add device ID as parameter
+        const params = {
+            device_id: req.params.deviceId,
+            t: Date.now()
+        };
+        
+        // Initial headers
+        let headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml,application/json',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': 'https://gandakitech.com.np/',
+            'Cache-Control': 'no-cache'
+        };
+        
+        // Add cookies if we have them
+        if (cookieJar[req.params.deviceId]) {
+            headers['Cookie'] = cookieJar[req.params.deviceId];
         }
         
-        // If we somehow got JSON directly, return it
-        return res.json(initialResponse.data);
+        // Keep following redirects until we get JSON
+        while (redirectCount < maxRedirects) {
+            console.log(`Redirect attempt ${redirectCount + 1}:`, currentUrl);
+            
+            const response = await axios({
+                method: 'get',
+                url: currentUrl,
+                params: redirectCount === 0 ? params : {},
+                headers: headers,
+                httpsAgent: httpsAgent,
+                maxRedirects: 0,
+                validateStatus: function (status) {
+                    return status >= 200 && status < 500;
+                }
+            });
+            
+            // Save any new cookies
+            if (response.headers['set-cookie']) {
+                const cookies = response.headers['set-cookie'];
+                cookieJar[req.params.deviceId] = cookies.join('; ');
+                console.log('Cookies updated');
+                headers['Cookie'] = cookieJar[req.params.deviceId];
+            }
+            
+            responseData = response.data;
+            
+            // Check if we got JSON
+            if (isJSON(responseData)) {
+                console.log('✅ Got JSON response!');
+                break;
+            }
+            
+            // Check if it's HTML with redirect
+            if (typeof responseData === 'string' && responseData.includes('<html')) {
+                const redirectUrl = extractRedirectUrl(responseData);
+                if (redirectUrl) {
+                    console.log('➡️ Following redirect to:', redirectUrl);
+                    currentUrl = redirectUrl;
+                    redirectCount++;
+                    continue;
+                }
+            }
+            
+            // If we get here, we don't know how to handle it
+            console.log('❌ Unexpected response type');
+            break;
+        }
+        
+        // Parse the final response
+        if (isJSON(responseData)) {
+            // If it's a string, parse it first
+            if (typeof responseData === 'string') {
+                try {
+                    const jsonData = JSON.parse(responseData);
+                    return res.json(jsonData);
+                } catch (e) {
+                    return res.send(responseData);
+                }
+            } else {
+                // It's already an object
+                return res.json(responseData);
+            }
+        } else {
+            // Still got HTML after max redirects
+            return res.status(502).json({
+                error: 'Failed to get JSON after multiple redirects',
+                html: typeof responseData === 'string' ? responseData.substring(0, 500) : 'Non-HTML response'
+            });
+        }
         
     } catch (error) {
         console.error('Error:', error.message);
-        console.error('Full error:', error);
         res.status(500).json({
             error: 'Failed to fetch device data',
             details: error.message
@@ -112,8 +151,7 @@ app.get('/api/test', async (req, res) => {
         });
         res.json({ 
             status: 'connected', 
-            code: response.status,
-            type: typeof response.data
+            code: response.status 
         });
     } catch (error) {
         res.json({ status: 'error', message: error.message });
@@ -125,7 +163,7 @@ app.get('/health', (req, res) => {
 });
 
 app.get('/', (req, res) => {
-    res.send('Smart Pale Dai Proxy Server - Challenge Handler Active');
+    res.send('Smart Pale Dai Proxy - Multi-Redirect Handler');
 });
 
 const PORT = process.env.PORT || 3000;
