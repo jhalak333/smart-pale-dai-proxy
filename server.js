@@ -7,9 +7,9 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Create an HTTPS agent that ignores certificate errors
+// Create HTTPS agent that ignores certificate errors
 const httpsAgent = new https.Agent({
-  rejectUnauthorized: false  // This is the key fix!
+  rejectUnauthorized: false
 });
 
 const TARGET_API = 'https://gandakitech.com.np/smart_bell/api/get_device_data.php';
@@ -18,7 +18,6 @@ app.get('/api/device/:deviceId', async (req, res) => {
     console.log(`\n=== Request for device: ${req.params.deviceId} ===`);
     
     try {
-        // Make request with the custom agent
         const response = await axios({
             method: 'get',
             url: TARGET_API,
@@ -33,13 +32,11 @@ app.get('/api/device/:deviceId', async (req, res) => {
                 'Referer': 'https://gandakitech.com.np/',
                 'Cache-Control': 'no-cache'
             },
-            httpsAgent: httpsAgent,  // Use our agent that ignores SSL errors
+            httpsAgent: httpsAgent,
             timeout: 10000
         });
 
         console.log('Response status:', response.status);
-        
-        // Send the data back to your ESP
         res.json(response.data);
         
     } catch (error) {
@@ -51,7 +48,6 @@ app.get('/api/device/:deviceId', async (req, res) => {
     }
 });
 
-// Simple test endpoint
 app.get('/api/test', async (req, res) => {
     try {
         const response = await axios.get('https://gandakitech.com.np', {
@@ -69,7 +65,7 @@ app.get('/health', (req, res) => {
 });
 
 app.get('/', (req, res) => {
-    res.send('Smart Pale Dai Proxy - Use /api/device/[deviceId]');
+    res.send('Smart Pale Dai Proxy Server is running');
 });
 
 const PORT = process.env.PORT || 3000;
